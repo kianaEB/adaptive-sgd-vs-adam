@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.pytest_tmp/
 .ipynb_checkpoints/
 
 # artifacts
@@ -18,3 +19,8 @@ results/*
 .DS_Store
 .vscode/
 .idea/
+
+# keep the study's deliverable artifacts
+!results/crossover.png
+!results/regime_heatmap.png
+!results/regime_study.csv

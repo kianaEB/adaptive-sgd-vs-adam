@@ -53,6 +53,25 @@ def generate_polynomial_data(
     return coefficients, roots
 
 
+def holdout_split(
+    n: int, n_val: int, seed: int | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Deterministically split ``n`` row indices into (fit, val).
+
+    The validation rows are held *out* of the fit set entirely so that model
+    selection scores unseen inputs with clean targets -- no label noise, no test
+    leakage. Returns sorted index arrays. Used by the study to carve a clean
+    validation set from training data (the test set stays wholly separate).
+    """
+    if not 0 <= n_val < n:
+        raise ValueError(f"n_val must be in [0, {n}); got {n_val}")
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(n)
+    val_idx = np.sort(perm[:n_val])
+    fit_idx = np.sort(perm[n_val:])
+    return fit_idx, val_idx
+
+
 def add_label_noise(
     Y: np.ndarray, noise_std: float, seed: int | None = None
 ) -> np.ndarray:

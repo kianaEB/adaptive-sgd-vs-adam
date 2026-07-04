@@ -4,6 +4,11 @@ Mirrors AdaptiveSGD.train so experiments/regime_study.py can call either path an
 get a history dict of the same shape. Kept as a manual step loop (rather than
 model.fit) so the compute budget -- max_steps -- means the same thing for every
 optimizer in the study.
+
+Model selection is deliberately identical to AdaptiveSGD's: on the same fixed
+step cadence (`eval_every`), evaluate a clean held-out validation set and keep the
+best-scoring weights. That way the only thing separating the optimizers is their
+update rule, not how their final model was chosen.
 """
 
 from __future__ import annotations
@@ -32,14 +37,17 @@ def train_baseline(
     epochs: int = 50,
     batch_size: int | None = 256,
     max_steps: int | None = None,
+    eval_every: int = 10,
     X_val=None,
     Y_val=None,
     verbose: bool = False,
 ) -> dict:
     """Train ``model`` with a stock Keras optimizer. Returns a history dict.
 
-    Same signature and return shape as AdaptiveSGD.train (minus n_reverts, which
-    is meaningless for these), so the two are drop-in comparable in the study.
+    Same signature and return shape as AdaptiveSGD.train (n_reverts stays 0, since
+    these never revert), so the two are drop-in comparable in the study. The
+    validation-based best-weight selection runs on the identical `eval_every`
+    cadence AdaptiveSGD uses, keeping model selection fair across optimizers.
     """
     import tensorflow as tf
 
@@ -48,46 +56,60 @@ def train_baseline(
     n = int(X_train.shape[0])
     bs = n if batch_size is None else batch_size
 
-    eval_X = X_val if X_val is not None else X_train
-    eval_Y = Y_val if Y_val is not None else Y_train
-    eval_X = tf.convert_to_tensor(eval_X, dtype=tf.float32)
-    eval_Y = tf.convert_to_tensor(eval_Y, dtype=tf.float32)
+    has_val = X_val is not None and Y_val is not None
+    sel_X = tf.convert_to_tensor(X_val if has_val else X_train, dtype=tf.float32)
+    sel_Y = tf.convert_to_tensor(Y_val if has_val else Y_train, dtype=tf.float32)
 
-    def loss_on(X, Y):
-        preds = model(X, training=False)
-        return float(tf.reduce_mean(tf.keras.losses.MSE(Y, preds)))
+    def select_loss() -> float:
+        preds = model(sel_X, training=False)
+        return float(tf.reduce_mean(tf.keras.losses.MSE(sel_Y, preds)))
 
-    best_loss = float("inf")
-    best_weights = model.get_weights()
+    best_val_loss = float("inf")
+    best_val_weights = model.get_weights()
     steps = 0
     history = {"loss": [], "lr": [], "n_reverts": 0, "steps": 0}
 
-    for epoch in range(1, epochs + 1):
-        idx = tf.random.shuffle(tf.range(n))
-        for start in range(0, n, bs):
-            b = idx[start : start + bs]
-            xb, yb = tf.gather(X_train, b), tf.gather(Y_train, b)
-            with tf.GradientTape() as tape:
-                preds = model(xb, training=True)
-                loss = tf.reduce_mean(tf.keras.losses.MSE(yb, preds))
-            grads = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(grads, model.trainable_variables))
-            steps += 1
-            if max_steps is not None and steps >= max_steps:
-                break
-
-        epoch_loss = loss_on(eval_X, eval_Y)
-        history["loss"].append(epoch_loss)
-        history["lr"].append(float(optimizer.learning_rate.numpy()))
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
-            best_weights = model.get_weights()
-        if verbose:
-            print(f"Epoch {epoch:>3} | loss {epoch_loss:.5f} | steps {steps}")
+    idx = tf.random.shuffle(tf.range(n))
+    pos = 0
+    epochs_done = 0
+    while True:
         if max_steps is not None and steps >= max_steps:
             break
+        if max_steps is None and epochs_done >= epochs:
+            break
+        if pos >= n:
+            idx = tf.random.shuffle(tf.range(n))
+            pos = 0
+            epochs_done += 1
+            continue
 
-    model.set_weights(best_weights)
-    history["best_loss"] = best_loss
+        b = idx[pos : pos + bs]
+        pos += bs
+        xb, yb = tf.gather(X_train, b), tf.gather(Y_train, b)
+        with tf.GradientTape() as tape:
+            preds = model(xb, training=True)
+            loss = tf.reduce_mean(tf.keras.losses.MSE(yb, preds))
+        grads = tape.gradient(loss, model.trainable_variables)
+        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+        steps += 1
+
+        last_step = max_steps is not None and steps >= max_steps
+        if steps % eval_every != 0 and not last_step:
+            continue
+
+        s_loss = select_loss()
+        history["loss"].append(s_loss)
+        history["lr"].append(float(optimizer.learning_rate.numpy()))
+        if s_loss < best_val_loss:
+            best_val_loss = s_loss
+            best_val_weights = model.get_weights()
+        if verbose:
+            print(f"step {steps:>5} | val {s_loss:.5f}")
+
+    model.set_weights(best_val_weights)
+    history["best_loss"] = best_val_loss
+    history["best_val_loss"] = best_val_loss
+    history["final_lr"] = float(optimizer.learning_rate.numpy())
     history["steps"] = steps
+    history["epochs"] = steps * bs / n
     return history

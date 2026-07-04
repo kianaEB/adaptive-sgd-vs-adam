@@ -17,6 +17,9 @@ class Config:
     # data / testbed
     n_train: int = 70_000
     n_test: int = 30_000
+    # Clean rows held out of the fit set for fair, identical model selection
+    # across every optimizer (carved from train; the test set stays separate).
+    n_val: int = 5_000
     sort_roots: bool = True
     seed: int = 42
 
@@ -45,14 +48,20 @@ class Config:
     # get many more updates per epoch, confounding the comparison. See SPEC.md
     # section 6 for this design decision.
     max_steps: int = 4000
+    # Accept/revert (and model-selection) cadence, in gradient steps. Fixing this
+    # across batch sizes gives every run the same number of control decisions
+    # (max_steps / eval_every), so the backtracking granularity does not vary
+    # with batch size. See SPEC.md section 6.
+    eval_every: int = 10
 
     def make_smoke(self) -> "Config":
         """Shrink everything for a fast end-to-end check."""
-        self.n_train, self.n_test = 2000, 500
+        self.n_train, self.n_test, self.n_val = 2000, 500, 200
         self.batch_sizes = (None, 128)
         self.noise_levels = (0.0, 0.1)
         self.optimizers = ("adaptive_sgd", "adam")
         self.max_steps = 200
+        self.eval_every = 5
         return self
 
 
